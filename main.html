@@ -3655,6 +3655,7 @@
           owners[_bookingState.category][d] = { ownerId: ownerId, ownerName: enteredName };
         });
         _saveBookingOwners(owners);
+        try { console.log('Booking: saved owner metadata', { category: _bookingState.category, dates: datesToBook, ownerId: ownerId, ownerName: enteredName }); } catch(e){}
       } catch(e){}
       
       // Also immediately add dates to bookings so they show as reserved
@@ -3668,6 +3669,7 @@
         });
         bookings[_bookingState.category] = Array.from(new Set(bookings[_bookingState.category])).sort();
         _saveBookings(bookings);
+        try { console.log('Booking: saved bookings', bookings[_bookingState.category]); } catch(e){}
       } catch(e){}
 
       // Open external Google Form in new tab for additional info (per-category URLs)
@@ -3695,6 +3697,9 @@
       const cat = _bookingState.category;
       const cur = _getCurrentUserId();
       
+      try { console.log('Attempting delete', { category: cat, date: dateStr, currentUser: cur }); } catch(e){}
+      try { console.log('Known owners:', _loadBookingOwners()[cat] || {}); } catch(e){}
+
       // STRICT GUARD: Check owner before ANY deletion (checks Firestore first if available)
       const owners = _loadBookingOwners();
       const ownerData = owners && owners[cat] && owners[cat][dateStr] ? owners[cat][dateStr] : null;
@@ -3715,17 +3720,30 @@
         if (!confirmDelete) return false;
       }
       
-      // If Firestore configured, remove there first
-      if (window._useFirestore && window._firestoreReady) {
-        window._firestoreReady.then(()=> removeDatesFromFirestore(cat, [dateStr])).then(res=>{
-          if (!res || !res.ok){ alert('Unable to remove booking: '+(res && res.err?res.err:'unknown error')); return; }
-          try { const bookings = _loadBookings(); bookings[cat] = res.dates || []; _saveBookings(bookings); }catch(e){}
-          // also remove local owner metadata for that date
-          try{ const owners = _loadBookingOwners(); if (owners && owners[cat]) { delete owners[cat][dateStr]; _saveBookingOwners(owners); } }catch(e){}
-          alert('Deleted booking '+dateStr);
-          renderBookingCalendar();
-        }).catch(err=>{ console.error('Firestore delete error', err); alert('Error deleting booking.'); });
-        return;
+      // If Firestore is enabled, double-check owner on the server before deleting
+      if (window._useFirestore && window._firestoreReady && window._firestore) {
+        return window._firestoreReady.then(()=>{
+          const ref = window._firestore.collection('bookings').doc(cat);
+          return ref.get().then(doc => {
+            const data = doc.exists ? doc.data() || {} : {};
+            const remoteOwners = data.owners || {};
+            const remoteOwner = remoteOwners && remoteOwners[dateStr] ? remoteOwners[dateStr].ownerId : null;
+            const remoteOwnerName = remoteOwners && remoteOwners[dateStr] ? remoteOwners[dateStr].ownerName : null;
+            if (remoteOwner && remoteOwner !== cur) {
+              alert('This date is reserved for the ' + (remoteOwnerName||'another') + ' family. Only they can remove it. You do not have permission.');
+              return;
+            }
+            // proceed with deletion via Firestore transaction helper
+            return removeDatesFromFirestore(cat, [dateStr]).then(res => {
+              if (!res || !res.ok){ alert('Unable to remove booking: '+(res && res.err?res.err:'unknown error')); return; }
+              try { const bookings = _loadBookings(); bookings[cat] = res.dates || []; _saveBookings(bookings); }catch(e){}
+              // also remove local owner metadata for that date
+              try{ const owners = _loadBookingOwners(); if (owners && owners[cat]) { delete owners[cat][dateStr]; _saveBookingOwners(owners); } }catch(e){}
+              alert('Deleted booking '+dateStr);
+              renderBookingCalendar();
+            }).catch(err=>{ console.error('Firestore delete error', err); alert('Error deleting booking.'); });
+          }).catch(err=>{ console.error('Failed reading booking doc', err); alert('Unable to verify server ownership. Delete aborted.'); });
+        });
       }
       // Fallback: localStorage
       const bookings = _loadBookings();
@@ -3738,28 +3756,46 @@
     }
 
     function startMoveBooking(dateStr){
-      // STRICT GUARD: Check owner before ANY move attempt
+      // STRICT GUARD: Check owner before ANY move attempt — if Firestore enabled, verify server-side first
       const cur = _getCurrentUserId();
       const owners = _loadBookingOwners();
       const ownerData = owners && owners[_bookingState.category] && owners[_bookingState.category][dateStr] ? owners[_bookingState.category][dateStr] : null;
       const ownerId = ownerData ? ownerData.ownerId : null;
       const ownerName = ownerData ? ownerData.ownerName : null;
-      
-      // CRITICAL: If there is owner data and current user is NOT the owner, BLOCK immediately
+
+      if (window._useFirestore && window._firestoreReady && window._firestore) {
+        return window._firestoreReady.then(()=>{
+          const ref = window._firestore.collection('bookings').doc(_bookingState.category);
+          return ref.get().then(doc => {
+            const data = doc.exists ? doc.data() || {} : {};
+            const remoteOwners = data.owners || {};
+            const remoteOwner = remoteOwners && remoteOwners[dateStr] ? remoteOwners[dateStr].ownerId : null;
+            const remoteOwnerName = remoteOwners && remoteOwners[dateStr] ? remoteOwners[dateStr].ownerName : null;
+            if (remoteOwner && remoteOwner !== cur) {
+              alert('This date is reserved for the ' + (remoteOwnerName||'another') + ' family. Only they can move it. You do not have permission.');
+              return;
+            }
+            // allowed — start move
+            _moveState = { category: _bookingState.category, original: [dateStr], length: 1 };
+            const bookedList = document.getElementById('bookedList');
+            bookedList.innerHTML = '';
+            const info = document.createElement('div'); info.style.color='#2f4963'; info.textContent = 'Move mode: pick a new start date on the calendar.';
+            bookedList.appendChild(info);
+          }).catch(err=>{ console.error('Failed reading booking doc', err); alert('Unable to verify server ownership. Move aborted.'); });
+        });
+      }
+
+      // Local-only path (no Firestore) — enforce via local owner metadata
       if (ownerData && ownerId) {
-        // Owner data exists — only allow move if current user is the owner
         if (ownerId !== cur) {
-          alert(`This date is reserved for the ${ownerName} family.\n\nOnly they can move this booking. You do not have permission.`);
+          alert('This date is reserved for the ' + (ownerName||'another') + ' family. Only they can move it. You do not have permission.');
           return false;
         }
       } else {
-        // No owner data found — this might be a booking from before owner tracking was added
-        // For safety, block move unless user confirms they own it
-        const confirmMove = confirm(`No owner information found for this date.\n\nIf you booked this date, click OK to move it.\n\nOtherwise, click Cancel.`);
+        const confirmMove = confirm('No owner information found for this date. If you booked this date, click OK to move it. Otherwise, click Cancel.');
         if (!confirmMove) return false;
       }
-      
-      // prepare move state: single-day move
+
       _moveState = { category: _bookingState.category, original: [dateStr], length: 1 };
       const bookedList = document.getElementById('bookedList');
       bookedList.innerHTML = '';
