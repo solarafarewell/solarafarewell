@@ -3091,13 +3091,18 @@
             cell.title = 'Reserved';
           }
           // meatball menu button (three-dot) that opens a small popup with actions
+          // ONLY show button if current user is the owner
+          const cur = _getCurrentUserId();
+          const owner = (catOwners && catOwners[dayStr]) ? catOwners[dayStr].ownerId : null;
+          const isOwner = (!owner || owner === cur);
+          
           cell.style.position = cell.style.position || 'relative';
           const mb = document.createElement('button');
           mb.className = 'meatball-btn';
           mb.type = 'button';
           mb.setAttribute('aria-haspopup','true');
           mb.setAttribute('aria-expanded','false');
-          mb.title = 'Options';
+          mb.title = isOwner ? 'Options' : 'Reserved by another user';
           mb.textContent = '⋮';
           mb.style.position = 'absolute';
           mb.style.top = '6px';
@@ -3106,8 +3111,10 @@
           mb.style.border = 'none';
           mb.style.color = isBooked ? '#fff' : '#2f4963';
           mb.style.fontSize = '1rem';
-          mb.style.cursor = 'pointer';
+          mb.style.cursor = isOwner ? 'pointer' : 'not-allowed';
           mb.style.padding = '2px 4px';
+          mb.style.opacity = isOwner ? '1' : '0.4';
+          mb.disabled = !isOwner;
 
           const menu = document.createElement('div');
           menu.className = 'cell-menu';
@@ -3133,10 +3140,6 @@
           optDel.style.border = 'none';
           optDel.style.cursor = 'pointer';
           optDel.onclick = (ev)=>{ ev.stopPropagation();
-            // only allow deletion if current user is owner (localStorage-only guard)
-            const cur = _getCurrentUserId();
-            const owner = (catOwners && catOwners[dayStr]) ? catOwners[dayStr].ownerId : null;
-            if (owner && owner !== cur) { alert('Only the user who reserved this date can remove it.'); menu.style.display='none'; mb.setAttribute('aria-expanded','false'); return; }
             if (confirm('Delete booking '+dayStr+'?')){ deleteBookedDate(dayStr); }
             menu.style.display='none'; mb.setAttribute('aria-expanded','false');
           };
@@ -3150,15 +3153,12 @@
           optMove.style.border = 'none';
           optMove.style.cursor = 'pointer';
           optMove.onclick = (ev)=>{ ev.stopPropagation();
-            const cur = _getCurrentUserId();
-            const owner = (catOwners && catOwners[dayStr]) ? catOwners[dayStr].ownerId : null;
-            if (owner && owner !== cur) { alert('Only the user who reserved this date can move it.'); menu.style.display='none'; mb.setAttribute('aria-expanded','false'); return; }
             startMoveBooking(dayStr); menu.style.display='none'; mb.setAttribute('aria-expanded','false'); };
 
           menu.appendChild(optDel);
           menu.appendChild(optMove);
 
-          mb.onclick = (e)=>{ e.stopPropagation(); const open = mb.getAttribute('aria-expanded')==='true'; closeAllCellMenus(); if (!open) { menu.style.display='flex'; mb.setAttribute('aria-expanded','true'); } else { menu.style.display='none'; mb.setAttribute('aria-expanded','false'); } };
+          mb.onclick = (e)=>{ e.stopPropagation(); if (!isOwner) { alert('Only the user who reserved this date can manage it.'); return; } const open = mb.getAttribute('aria-expanded')==='true'; closeAllCellMenus(); if (!open) { menu.style.display='flex'; mb.setAttribute('aria-expanded','true'); } else { menu.style.display='none'; mb.setAttribute('aria-expanded','false'); } };
 
           cell.appendChild(mb);
           cell.appendChild(menu);
@@ -3604,6 +3604,16 @@
       // Store as a pending booking (includes owner metadata)
       const pending = { category: _bookingState.category, dates: datesToBook, timestamp: Date.now(), ownerId: ownerId, ownerName: enteredName };
       try { localStorage.setItem('pending_room_booking', JSON.stringify(pending)); } catch(e){}
+      
+      // Pre-populate owner metadata so it's immediately available (not just after finalize)
+      try {
+        const owners = _loadBookingOwners();
+        owners[_bookingState.category] = owners[_bookingState.category] || {};
+        datesToBook.forEach(d => {
+          owners[_bookingState.category][d] = { ownerId: ownerId, ownerName: enteredName };
+        });
+        _saveBookingOwners(owners);
+      } catch(e){}
 
       // Open external Google Form in new tab for additional info (per-category URLs)
       let formUrl = 'https://docs.google.com/forms/d/e/1FAIpQLSfgBz5XSL9BvXut2jyRNE8fgT0JWxwYGj2e7ax-_sBYACNDQQ/viewform';
