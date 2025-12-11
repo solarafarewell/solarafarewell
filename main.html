@@ -3803,6 +3803,76 @@
       bookedList.appendChild(info);
     }
 
+    // --- Admin: hidden button + privileged delete-all handler --------------------
+    // Adds a hidden button that an admin can reveal; clicking it will remove
+    // all bookings and owner metadata. Works with Firestore (if enabled) or
+    // falls back to localStorage-only removal.
+    function adminDeleteAllBookings(){
+      if (!confirm('Admin: delete ALL bookings from all categories? This cannot be undone.')) return;
+
+      // If Firestore is configured, attempt server-side wipe first
+      if (window._useFirestore && window._firestoreReady && window._firestore) {
+        return window._firestoreReady.then(()=>{
+          try {
+            const col = window._firestore.collection('bookings');
+            return col.get().then(querySnapshot => {
+              const ops = [];
+              querySnapshot.forEach(doc => {
+                try {
+                  // clear dates and owners for each category document
+                  ops.push(doc.ref.set({ dates: [], owners: {} }, { merge: true }));
+                } catch(e) { /* continue */ }
+              });
+              return Promise.all(ops);
+            }).then(()=>{
+              try { _saveBookings({}); _saveBookingOwners({}); } catch(e){}
+              alert('All bookings deleted (server + local).');
+              try { renderBookingCalendar(); } catch(e){}
+            }).catch(err=>{ console.error('Admin delete all (server) error', err); alert('Error deleting bookings on server: ' + (err && err.message?err.message:String(err))); });
+          } catch(e){ console.error('Admin delete-all unexpected', e); alert('Error performing admin delete.'); }
+        }).catch(err=>{ console.error('Firestore ready failed', err); alert('Unable to reach server to delete bookings.'); });
+      }
+
+      // Local-only fallback: clear local stored bookings & owners
+      try {
+        _saveBookings({});
+        _saveBookingOwners({});
+        alert('All bookings deleted (local only).');
+        try { renderBookingCalendar(); } catch(e){}
+      } catch(e){ console.error('Admin delete all (local) error', e); alert('Error deleting local bookings'); }
+    }
+
+    // Create a hidden admin button appended to the page. It's hidden by default.
+    (function createAdminButton(){
+      try {
+        const existing = document.getElementById('adminDeleteAllBtn');
+        if (existing) return;
+        const btn = document.createElement('button');
+        btn.id = 'adminDeleteAllBtn';
+        btn.type = 'button';
+        btn.textContent = 'Admin: Delete All Bookings';
+        btn.style.display = 'none';
+        btn.style.position = 'fixed';
+        btn.style.bottom = '12px';
+        btn.style.right = '12px';
+        btn.style.zIndex = '3500';
+        btn.style.background = '#b71c1c';
+        btn.style.color = '#fff';
+        btn.style.border = 'none';
+        btn.style.padding = '10px 12px';
+        btn.style.borderRadius = '6px';
+        btn.style.boxShadow = '0 6px 16px rgba(0,0,0,0.16)';
+        btn.style.cursor = 'pointer';
+        btn.onclick = function(e){ e.preventDefault(); adminDeleteAllBookings(); };
+        document.body.appendChild(btn);
+      } catch(e) { console.error('createAdminButton failed', e); }
+    })();
+
+    // Reveal helper: call `revealAdminButton()` from the console or your admin UI
+    // to show the hidden button. This keeps it out of the regular UI.
+    function revealAdminButton(){ try { const b = document.getElementById('adminDeleteAllBtn'); if (b) b.style.display='block'; } catch(e){} }
+
+
     // Open inline editor overlay for a given design item
     // Open inline editor to replace a gallery image
     function openDesignEditor(itemDiv, type, idx, originalSrc) {
@@ -4436,6 +4506,16 @@
 
       // Append user message to UI and history
       appendMsg('user', q);
+
+      // Special admin reveal: if the user types exactly "admin" (case-insensitive), reveal the hidden admin button
+      try {
+        if (q.toLowerCase() === 'admin') {
+          try { revealAdminButton(); } catch(e){}
+          document.getElementById('typing-indicator')?.remove();
+          appendMsg('bot', 'Admin mode enabled. The admin control has been revealed.', 'System');
+          return;
+        }
+      } catch(e) { /* ignore */ }
 
       // Show typing indicator
       const typingDiv = document.createElement('div');
